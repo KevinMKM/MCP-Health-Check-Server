@@ -2,8 +2,10 @@
 
 public interface ISessionManager
 {
-    McpSession Create();
-    McpSession Get(string sessionId);
-    void Remove(string sessionId);
+    McpSession CreateSession();
+    bool TryGetSession(Guid sessionId, out McpSession? session);
+    int RemoveExpiredSessions(TimeSpan expiration);
+    bool Remove(Guid sessionId);
+    int GetActiveSessionCount();
     IEnumerable<McpSession> All();
 }

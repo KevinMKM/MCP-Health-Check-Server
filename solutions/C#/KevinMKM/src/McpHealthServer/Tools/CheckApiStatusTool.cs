@@ -1,5 +1,6 @@
-﻿using McpHealthServer.Core;
+﻿using McpHealthServer.Core.Configuration;
 using McpHealthServer.Security;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -7,52 +8,150 @@ namespace McpHealthServer.Tools;
 
 public class CheckApiStatusTool : ITool
 {
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ISsrfPolicy _ssrfPolicy;
+    private readonly IOptions<McpServerOptions> _options;
+    private readonly ILogger<CheckApiStatusTool> _logger;
+
     public string Name => "check_api_status";
 
-    private readonly IHttpClientFactory _http;
-    private readonly ISsrfPolicy _ssrf;
+    public string Description =>
+        "Checks the availability and health of an HTTP/HTTPS endpoint";
 
-    public CheckApiStatusTool(
-        IHttpClientFactory http,
-        ISsrfPolicy ssrf)
+    public object InputSchema => new
     {
-        _http = http;
-        _ssrf = ssrf;
+        type = "object",
+        properties = new
+        {
+            url = new
+            {
+                type = "string",
+                description = "The URL to check (must be HTTP or HTTPS)",
+                format = "uri"
+            }
+        },
+        required = new[] { "url" }
+    };
+
+    public CheckApiStatusTool()
+    {
+
     }
 
-    public async Task ExecuteAsync(JsonElement input, McpSession session)
+    public CheckApiStatusTool(IHttpClientFactory httpClientFactory, ISsrfPolicy ssrfPolicy, IOptions<McpServerOptions> options, ILogger<CheckApiStatusTool> logger)
     {
-        var url = input.GetProperty("url").GetString()!;
-        await _ssrf.ValidateAsync(url);
+        _httpClientFactory = httpClientFactory;
+        _ssrfPolicy = ssrfPolicy;
+        _options = options;
+        _logger = logger;
+    }
 
-        var client = _http.CreateClient("probe");
+    public async Task<object> ExecuteAsync(
+        JsonElement input,
+        CancellationToken cancellationToken = default)
+    {
+        if (!input.TryGetProperty("url", out var urlElement))
+        {
+            return new
+            {
+                status = "ERROR",
+                error = "Missing required field: url",
+                checked_at = DateTime.UtcNow
+            };
+        }
+
+        var url = urlElement.GetString();
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return new
+            {
+                status = "ERROR",
+                error = "URL cannot be empty",
+                checked_at = DateTime.UtcNow
+            };
+        }
+
+        // Validate URL format
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "http" && uri.Scheme != "https"))
+        {
+            return new
+            {
+                url,
+                status = "ERROR",
+                error = "Invalid URL or unsupported scheme (must be HTTP/HTTPS)",
+                checked_at = DateTime.UtcNow
+            };
+        }
+
+        // SSRF Protection
+        if (!_ssrfPolicy.IsAllowed(url))
+        {
+            _logger.LogWarning("SSRF blocked: {Url}", url);
+            return new
+            {
+                url,
+                status = "BLOCKED",
+                error = "URL blocked by security policy",
+                checked_at = DateTime.UtcNow
+            };
+        }
+
+        // Perform health check
         var sw = Stopwatch.StartNew();
-
         try
         {
-            var resp = await client.GetAsync(url);
+            var timeout = TimeSpan.FromMilliseconds(
+                _options.Value.HealthCheck.TimeoutMilliseconds);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(timeout);
+
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = timeout;
+
+            var response = await client.GetAsync(url, cts.Token);
             sw.Stop();
 
-            await session.EventChannel.Writer.WriteAsync(
-                new McpEvent("tool.result", new
-                {
-                    url,
-                    status = resp.IsSuccessStatusCode ? "UP" : "DOWN",
-                    http_status = (int)resp.StatusCode,
-                    latency_ms = sw.ElapsedMilliseconds,
-                    checked_at = DateTime.UtcNow
-                }, DateTime.UtcNow));
+            _logger.LogInformation(
+                "Health check: {Url} returned {StatusCode} in {ElapsedMs}ms",
+                url,
+                (int)response.StatusCode,
+                sw.ElapsedMilliseconds);
+
+            return new
+            {
+                url,
+                status = response.IsSuccessStatusCode ? "UP" : "DOWN",
+                http_status = (int)response.StatusCode,
+                latency_ms = sw.ElapsedMilliseconds,
+                checked_at = DateTime.UtcNow
+            };
         }
-        catch (Exception ex)
+        catch (TaskCanceledException)
         {
-            await session.EventChannel.Writer.WriteAsync(
-                new McpEvent("tool.result", new
-                {
-                    url,
-                    status = "DOWN",
-                    error = ex.Message,
-                    checked_at = DateTime.UtcNow
-                }, DateTime.UtcNow));
+            sw.Stop();
+            _logger.LogWarning("Health check timeout: {Url}", url);
+            return new
+            {
+                url,
+                status = "DOWN",
+                error = $"Timeout after {sw.ElapsedMilliseconds}ms",
+                checked_at = DateTime.UtcNow
+            };
+        }
+        catch (HttpRequestException ex)
+        {
+            sw.Stop();
+            _logger.LogWarning(ex, "Health check failed: {Url}", url);
+            return new
+            {
+                url,
+                status = "DOWN",
+                error = ex.Message,
+                latency_ms = sw.ElapsedMilliseconds,
+                checked_at = DateTime.UtcNow
+            };
         }
     }
 }

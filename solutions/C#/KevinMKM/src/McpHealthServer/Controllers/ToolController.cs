@@ -20,17 +20,18 @@ public class ToolController : ControllerBase
 
     [HttpPost("invoke")]
     public async Task<IActionResult> Invoke(
-        string sessionId,
-        [FromBody] JsonElement body)
+        Guid sessionId,
+        [FromBody] JsonElement body,
+        CancellationToken cancellationToken = default)
     {
-        var session = _sessions.Get(sessionId);
+        _sessions.TryGetSession(sessionId, out var session);
         var name = body.GetProperty("name").GetString();
         var input = body.GetProperty("input");
 
         var tool = _tools.FirstOrDefault(t => t.Name == name);
         if (tool == null) return BadRequest("Tool not found");
 
-        await tool.ExecuteAsync(input, session);
+        await tool.ExecuteAsync(input, cancellationToken);
 
         return Accepted();
     }

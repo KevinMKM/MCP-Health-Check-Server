@@ -1,10 +1,12 @@
-﻿using McpHealthServer.Core;
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace McpHealthServer.Tools;
 
 public interface ITool
 {
     string Name { get; }
-    Task ExecuteAsync(JsonElement input, McpSession session);
+    string Description { get; }
+    object InputSchema { get; }
+
+    Task<object> ExecuteAsync(JsonElement input, CancellationToken cancellationToken = default);
 }

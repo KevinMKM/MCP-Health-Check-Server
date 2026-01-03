@@ -1,6 +1,9 @@
-﻿namespace McpHealthServer.Security;
+﻿using System.Net;
+using System.Net.Sockets;
+
+namespace McpHealthServer.Security;
 
 public interface ISsrfPolicy
 {
-    Task ValidateAsync(string url);
+    bool IsAllowed(string url);
 }

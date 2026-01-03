@@ -1,6 +1,46 @@
-@McpHealthServer_HostAddress = http://localhost:5067
-
-GET {{McpHealthServer_HostAddress}}/weatherforecast/
-Accept: application/json
+### Initialize Session
+POST {{host}}/mcp/initialize
+Content-Type: application/json
 
 ###
+
+### Handshake (SSE) - Copy session_id from above
+GET {{host}}/mcp/handshake/YOUR-SESSION-ID-HERE
+Accept: text/event-stream
+
+###
+
+### Call check_api_status tool
+POST {{host}}/mcp/tools/call
+Content-Type: application/json
+
+{
+  "sessionId": "YOUR-SESSION-ID-HERE",
+  "name": "check_api_status",
+  "input": {
+    "url": "https://httpbin.org/status/200"
+  }
+}
+
+###
+
+### Test SSRF Protection (should fail)
+POST {{host}}/mcp/tools/call
+Content-Type: application/json
+
+{
+  "sessionId": "YOUR-SESSION-ID-HERE",
+  "name": "check_api_status",
+  "input": {
+    "url": "http://localhost:8080"
+  }
+}
+
+###
+
+### Health Check
+GET {{host}}/health
+
+###
+
+@host = http://localhost:5000
